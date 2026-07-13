@@ -112,9 +112,20 @@
       <button class="generate-main-btn" id="scanQrBtn" style="position: static; box-shadow: none;">📷 Scan QR to Unlock</button>
 
       <div id="qrScannerWrap" style="display:none; margin-top: 18px;">
-        <video id="qrVideo" playsinline muted style="width:100%; border-radius: 20px; background:#000;"></video>
+        <div style="position: relative; border-radius: 20px; overflow: hidden; background:#000;">
+          <video id="qrVideo" playsinline muted style="width:100%; display:block;"></video>
+          <div style="position:absolute; inset:0; display:flex; align-items:center; justify-content:center; pointer-events:none;">
+            <div id="qrTargetBox" style="width:62%; aspect-ratio:1/1; position:relative;">
+              <div style="position:absolute; top:0; left:0; width:34px; height:34px; border-top:4px solid #FFD500; border-left:4px solid #FFD500; border-radius: 8px 0 0 0;"></div>
+              <div style="position:absolute; top:0; right:0; width:34px; height:34px; border-top:4px solid #FFD500; border-right:4px solid #FFD500; border-radius: 0 8px 0 0;"></div>
+              <div style="position:absolute; bottom:0; left:0; width:34px; height:34px; border-bottom:4px solid #FFD500; border-left:4px solid #FFD500; border-radius: 0 0 0 8px;"></div>
+              <div style="position:absolute; bottom:0; right:0; width:34px; height:34px; border-bottom:4px solid #FFD500; border-right:4px solid #FFD500; border-radius: 0 0 8px 0;"></div>
+            </div>
+          </div>
+        </div>
         <canvas id="qrCanvas" style="display:none;"></canvas>
-        <button id="cancelScanBtn" class="reset-link" style="margin-top: 10px;">✕ Cancel scanning</button>
+        <p style="font-size: 0.75rem; color: var(--text-tertiary); margin-top: 10px;">Fit the QR code fully inside the yellow box, hold steady, and keep it well lit.</p>
+        <button id="cancelScanBtn" class="reset-link" style="margin-top: 4px;">✕ Cancel scanning</button>
       </div>
 
       <div id="qrStatusMsg" style="margin-top: 14px;"></div>
@@ -201,6 +212,7 @@
   let authToken = sessionStorage.getItem('qrAuthToken') || null;
   let scanStream = null;
   let scanRafId = null;
+  let scanStartTime = null;
 
   function authHeaders() {
     return authToken ? { 'x-auth-token': authToken } : {};
@@ -215,21 +227,41 @@
     setQrStatus('');
     const video = document.getElementById('qrVideo');
     try {
-      scanStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
+      scanStream = await navigator.mediaDevices.getUserMedia({
+        video: {
+          facingMode: { ideal: 'environment' },
+          width: { ideal: 1280 },
+          height: { ideal: 1280 }
+        }
+      });
     } catch (e) {
       setQrStatus('⚠️ Could not access camera. Please allow camera permission and try again.', true);
       return;
     }
+
+    // Try to force continuous autofocus where the browser/device supports it.
+    // Not supported everywhere (e.g. iOS Safari ignores this — it autofocuses on its own),
+    // so we just try and silently move on if it's not available.
+    try {
+      const [track] = scanStream.getVideoTracks();
+      const caps = track.getCapabilities ? track.getCapabilities() : {};
+      if (caps.focusMode && caps.focusMode.includes('continuous')) {
+        await track.applyConstraints({ advanced: [{ focusMode: 'continuous' }] });
+      }
+    } catch (e) { /* ignore — not supported on this device */ }
+
     video.srcObject = scanStream;
     await video.play();
     document.getElementById('qrScannerWrap').style.display = 'block';
     document.getElementById('scanQrBtn').style.display = 'none';
+    scanStartTime = Date.now();
     scanLoop();
   }
 
   function stopScanning() {
     if (scanRafId) cancelAnimationFrame(scanRafId);
     scanRafId = null;
+    scanStartTime = null;
     if (scanStream) {
       scanStream.getTracks().forEach(t => t.stop());
       scanStream = null;
@@ -242,17 +274,34 @@
     const video = document.getElementById('qrVideo');
     const canvas = document.getElementById('qrCanvas');
 
-    if (video.readyState === video.HAVE_ENOUGH_DATA) {
-      canvas.width = video.videoWidth;
-      canvas.height = video.videoHeight;
+    if (video.readyState === video.HAVE_ENOUGH_DATA && video.videoWidth) {
+      // Crop to a centered square matching the yellow guide box (62% of the
+      // shorter video dimension), then scale it up. This mirrors what the
+      // person is actually aiming at, avoids clutter around the edges, and
+      // gives jsQR a bigger/sharper image to decode — much more reliable
+      // than scanning the full, often-blurry wide frame.
+      const vw = video.videoWidth, vh = video.videoHeight;
+      const cropSize = Math.min(vw, vh) * 0.62;
+      const sx = (vw - cropSize) / 2;
+      const sy = (vh - cropSize) / 2;
+      const outputSize = 500;
+
+      canvas.width = outputSize;
+      canvas.height = outputSize;
       const ctx = canvas.getContext('2d');
-      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-      const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-      const code = typeof jsQR === 'function' ? jsQR(imageData.data, imageData.width, imageData.height) : null;
+      ctx.drawImage(video, sx, sy, cropSize, cropSize, 0, 0, outputSize, outputSize);
+      const imageData = ctx.getImageData(0, 0, outputSize, outputSize);
+      const code = typeof jsQR === 'function'
+        ? jsQR(imageData.data, imageData.width, imageData.height, { inversionAttempts: 'dontInvert' })
+        : null;
       if (code && code.data) {
         stopScanning();
         verifyQrCode(code.data);
         return;
+      }
+
+      if (scanStartTime && Date.now() - scanStartTime > 6000) {
+        setQrStatus('👀 Still looking — move a little closer, fill the yellow box, and avoid glare.');
       }
     }
     scanRafId = requestAnimationFrame(scanLoop);
