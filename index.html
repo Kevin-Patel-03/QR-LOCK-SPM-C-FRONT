@@ -198,7 +198,7 @@
   </div>
 </div>
 
-<script src="https://cdnjs.cloudflare.com/ajax/libs/jsQR/1.4.0/jsQR.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.min.js" onerror="window.__jsQrLoadFailed = true;"></script>
 <script>
 (function() {
   // 👉 Replace with your deployed backend URL (see README for deployment steps)
@@ -218,6 +218,23 @@
     return authToken ? { 'x-auth-token': authToken } : {};
   }
 
+  // fetch() has no built-in timeout — if the server is slow or unreachable,
+  // a plain fetch() can hang forever with zero feedback. This wraps it with
+  // an AbortController so we always resolve/reject within timeoutMs, and
+  // gives the user a heads-up if it's taking unusually long (e.g. a free-tier
+  // backend "waking up" from sleep).
+  async function fetchWithTimeout(url, options = {}, timeoutMs = 45000, onSlow = null) {
+    const controller = new AbortController();
+    const slowTimer = onSlow ? setTimeout(onSlow, 8000) : null;
+    const timeoutTimer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      return await fetch(url, { ...options, signal: controller.signal });
+    } finally {
+      clearTimeout(slowTimer);
+      clearTimeout(timeoutTimer);
+    }
+  }
+
   function setQrStatus(msg, isError) {
     const el = document.getElementById('qrStatusMsg');
     el.innerHTML = msg ? `<div class="${isError ? 'error-box' : 'copy-feedback'}">${msg}</div>` : '';
@@ -225,6 +242,12 @@
 
   async function startScanning() {
     setQrStatus('');
+
+    if (window.__jsQrLoadFailed || typeof jsQR !== 'function') {
+      setQrStatus('⚠️ QR scanner could not load (network/ad-blocker issue). Please check your internet connection and reload the page.', true);
+      return;
+    }
+
     const video = document.getElementById('qrVideo');
     try {
       scanStream = await navigator.mediaDevices.getUserMedia({
@@ -310,11 +333,16 @@
   async function verifyQrCode(codeText) {
     setQrStatus('🔎 Checking code...');
     try {
-      const res = await fetch(`${API}/verify-qr`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ code: codeText })
-      });
+      const res = await fetchWithTimeout(
+        `${API}/verify-qr`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ code: codeText })
+        },
+        45000,
+        () => setQrStatus('⏳ Still checking — the server may be waking up, this can take up to 30–40 seconds the first time.')
+      );
       const data = await res.json();
       if (data.success && data.token) {
         authToken = data.token;
@@ -325,7 +353,11 @@
         setQrStatus('❌ ' + (data.error || 'That QR code is not valid.'), true);
       }
     } catch (e) {
-      setQrStatus('⚠️ Could not reach server. Check your connection and try again.', true);
+      if (e.name === 'AbortError') {
+        setQrStatus('⚠️ The server took too long to respond. Please try scanning again.', true);
+      } else {
+        setQrStatus('⚠️ Could not reach server. Check your connection and try again.', true);
+      }
     }
   }
 
@@ -338,7 +370,7 @@
   // Load business data
   async function loadBusiness() {
     try {
-      const res = await fetch(`${API}/business`, { headers: authHeaders() });
+      const res = await fetchWithTimeout(`${API}/business`, { headers: authHeaders() }, 45000);
       if (res.status === 401) return lockOut();
       bizData = await res.json();
       Object.keys(bizData.categories).forEach(cat => { collapsedState[cat] = true; });
@@ -427,11 +459,15 @@
     document.getElementById('step2Actions').style.display = 'none';
 
     try {
-      const res = await fetch(`${API}/generate`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', ...authHeaders() },
-        body: JSON.stringify({ selectedProducts: [...selectedProducts] })
-      });
+      const res = await fetchWithTimeout(
+        `${API}/generate`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', ...authHeaders() },
+          body: JSON.stringify({ selectedProducts: [...selectedProducts] })
+        },
+        45000
+      );
       if (res.status === 401) { lockOut(); return; }
       const data = await res.json();
       if (data.error) throw new Error(data.error);
