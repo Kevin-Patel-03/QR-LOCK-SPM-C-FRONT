@@ -81,9 +81,63 @@
     @media (max-height: 600px) {
       .sticky-generate-wrapper { position: relative; margin-top: 20px; }
     }
+
+    /* Credit badge — fixed top-right corner */
+    .credit-badge {
+      position: fixed;
+      top: 14px;
+      right: 14px;
+      background: var(--accent-rose);
+      color: white;
+      font-size: 0.75rem;
+      font-weight: 700;
+      padding: 6px 14px;
+      border-radius: 40px;
+      box-shadow: 0 2px 6px rgba(0,0,0,0.15);
+      z-index: 30;
+      display: none;
+      white-space: nowrap;
+    }
+    .credit-badge.low { background: #C2185B; }
+    .credit-badge.empty { background: #a32d2d; }
+
+    /* Out-of-credits modal */
+    .modal-overlay {
+      position: fixed; inset: 0; background: rgba(0,0,0,0.5);
+      display: none; align-items: center; justify-content: center;
+      z-index: 100; padding: 20px;
+    }
+    .modal-overlay.open { display: flex; }
+    .modal-box {
+      background: var(--bg-card); border-radius: 24px; padding: 26px 22px;
+      max-width: 380px; width: 100%; text-align: center;
+      box-shadow: 0 10px 30px rgba(0,0,0,0.2);
+    }
+    .modal-box .modal-icon { font-size: 2.2rem; margin-bottom: 10px; }
+    .modal-box h3 { font-size: 1.1rem; margin-bottom: 8px; }
+    .modal-box p { font-size: 0.85rem; color: var(--text-secondary); margin-bottom: 18px; }
+    .whatsapp-btn {
+      background: #25D366; color: white; border: none; width: 100%;
+      padding: 14px; border-radius: 60px; font-weight: 700; font-size: 0.95rem;
+      display: flex; align-items: center; justify-content: center; gap: 8px;
+      text-decoration: none; cursor: pointer;
+    }
+    .whatsapp-btn:active { transform: scale(0.97); }
   </style>
 </head>
 <body>
+
+<div id="creditBadge" class="credit-badge">✨ 5 credits left</div>
+
+<div id="outOfCreditsModal" class="modal-overlay">
+  <div class="modal-box">
+    <div class="modal-icon">🔒</div>
+    <h3>You're out of free reviews</h3>
+    <p>You've used all your review credits for this visit. Tap below to message us on WhatsApp and we'll help you out!</p>
+    <a id="whatsappHelpBtn" href="#" target="_blank" class="whatsapp-btn">📲 Send us a WhatsApp message</a>
+  </div>
+</div>
+
 <div class="app-wrapper">
 
   <div class="global-header">
@@ -208,6 +262,11 @@
   let selectedProducts = new Set();
   let currentGeneratedReview = "";
 
+  // ---- Credit system state ----
+  let remainingCredits = null; // filled in once we load business data
+  let creditLimit = 5;
+  let ownerWhatsapp = '910000000000';
+  
   // ---- QR gate state ----
   let authToken = sessionStorage.getItem('qrAuthToken') || null;
   let scanStream = null;
@@ -365,6 +424,23 @@
   async function enterApp() {
     showStep(1);
     await loadBusiness();
+    // Credits are a GLOBAL pool shared by everyone using the app right now,
+    // so keep the badge fresh even if someone else is generating reviews
+    // on a different phone at the same time.
+    setInterval(refreshCredits, 15000);
+  }
+
+  async function refreshCredits() {
+    if (!authToken) return;
+    try {
+      const res = await fetch(`${API}/credits`, { headers: authHeaders() });
+      if (res.status === 401) return; // don't lock them out just for a background poll
+      const data = await res.json();
+      if (typeof data.remainingCredits === 'number') {
+        remainingCredits = data.remainingCredits;
+        updateCreditBadge();
+      }
+    } catch (e) { /* ignore background polling errors */ }
   }
 
   // Load business data
@@ -373,9 +449,13 @@
       const res = await fetchWithTimeout(`${API}/business`, { headers: authHeaders() }, 45000);
       if (res.status === 401) return lockOut();
       bizData = await res.json();
+      remainingCredits = typeof bizData.remainingCredits === 'number' ? bizData.remainingCredits : creditLimit;
+      creditLimit = bizData.creditLimit || creditLimit;
+      ownerWhatsapp = bizData.ownerWhatsapp || ownerWhatsapp;
       Object.keys(bizData.categories).forEach(cat => { collapsedState[cat] = true; });
       renderCategories();
       updateSelectedPreview();
+      updateCreditBadge();
     } catch (e) {
       document.getElementById('categoriesContainer').innerHTML = '<div class="error-box">⚠️ Cannot connect to server. Make sure the backend is running and the API URL in index.html is correct.</div>';
     }
@@ -387,6 +467,41 @@
     sessionStorage.removeItem('qrAuthToken');
     showStep(0);
     setQrStatus('⚠️ Your session expired. Please scan the QR code again.', true);
+  }
+
+  // ---- Credit badge + WhatsApp lockout ----
+  function updateCreditBadge() {
+    const badge = document.getElementById('creditBadge');
+    if (remainingCredits === null) { badge.style.display = 'none'; return; }
+    badge.style.display = 'block';
+    badge.textContent = `✨ ${remainingCredits} credit${remainingCredits === 1 ? '' : 's'} left`;
+    badge.classList.remove('low', 'empty');
+    if (remainingCredits <= 0) badge.classList.add('empty');
+    else if (remainingCredits <= 1) badge.classList.add('low');
+
+    const genBtn = document.getElementById('step1GenerateBtn');
+    if (genBtn) {
+      if (remainingCredits <= 0) {
+        genBtn.textContent = '🔒 Out of credits';
+      } else {
+        genBtn.textContent = '✨ Generate AI Review →';
+      }
+    }
+  }
+
+  function buildWhatsappLink() {
+    const shopName = (bizData && bizData.name) ? bizData.name : 'there';
+    const text = `Hi ${shopName}, I've used up all my review credits on the review app. Can you please help me?`;
+    return `https://wa.me/${ownerWhatsapp}?text=${encodeURIComponent(text)}`;
+  }
+
+  function showOutOfCreditsModal() {
+    document.getElementById('whatsappHelpBtn').href = buildWhatsappLink();
+    document.getElementById('outOfCreditsModal').classList.add('open');
+  }
+
+  function hideOutOfCreditsModal() {
+    document.getElementById('outOfCreditsModal').classList.remove('open');
   }
 
   function renderCategories() {
@@ -442,14 +557,19 @@
     }
   }
 
-  async function generateAndGoToStep2() {
+async function generateAndGoToStep2() {
     if (selectedProducts.size === 0) {
       alert("Please select at least one item first.");
       return;
     }
 
-    showStep(2);
+    if (remainingCredits !== null && remainingCredits <= 0) {
+      showOutOfCreditsModal();
+      return;
+    }
 
+    showStep(2);
+  
     const btn = document.getElementById('step1GenerateBtn');
     btn.disabled = true;
 
@@ -470,11 +590,24 @@
       );
       if (res.status === 401) { lockOut(); return; }
       const data = await res.json();
+
+      if (res.status === 403 && data.error === 'NO_CREDITS') {
+        remainingCredits = 0;
+        updateCreditBadge();
+        showStep(1);
+        showOutOfCreditsModal();
+        return;
+      }
       if (data.error) throw new Error(data.error);
 
       currentGeneratedReview = data.review;
       document.getElementById('generatedReviewText').innerText = data.review;
       document.getElementById('step2Actions').style.display = 'flex';
+
+      if (typeof data.remainingCredits === 'number') {
+        remainingCredits = data.remainingCredits;
+        updateCreditBadge();
+      }
     } catch (err) {
       document.getElementById('reviewError').style.display = 'block';
       document.getElementById('reviewError').innerText = '⚠️ ' + (err.message || 'Failed to generate review. Please try again.');
@@ -549,6 +682,10 @@
     document.getElementById('step2Actions').style.display = 'flex';
     showStep(2);
   });
+  document.getElementById('outOfCreditsModal').addEventListener('click', (e) => {
+    if (e.target.id === 'outOfCreditsModal') hideOutOfCreditsModal();
+  });
+  document.getElementById('scanQrBtn').addEventListener('click', startScanning);
   document.getElementById('scanQrBtn').addEventListener('click', startScanning);
   document.getElementById('cancelScanBtn').addEventListener('click', () => { stopScanning(); setQrStatus(''); });
 
