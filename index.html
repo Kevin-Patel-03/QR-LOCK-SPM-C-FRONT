@@ -82,22 +82,21 @@
       .sticky-generate-wrapper { position: relative; margin-top: 20px; }
     }
 
-    /* Credit badge — fixed top-right corner */
+   
+    /* Credit badge — sits under the shop address in the header */
     .credit-badge {
-      position: fixed;
-      top: 14px;
-      right: 14px;
+      display: none;
+      margin-top: 8px;
       background: var(--accent-rose);
       color: white;
-      font-size: 0.75rem;
+      font-size: 0.7rem;
       font-weight: 700;
-      padding: 6px 14px;
+      padding: 4px 12px;
       border-radius: 40px;
       box-shadow: 0 2px 6px rgba(0,0,0,0.15);
-      z-index: 30;
-      display: none;
       white-space: nowrap;
     }
+    
     .credit-badge.low { background: #C2185B; }
     .credit-badge.empty { background: #a32d2d; }
 
@@ -127,7 +126,7 @@
 </head>
 <body>
 
-<div id="creditBadge" class="credit-badge">✨ 5 credits left</div>
+
 
 <div id="outOfCreditsModal" class="modal-overlay">
   <div class="modal-box">
@@ -151,7 +150,8 @@
       
     <div class="star-rating">★★★★★</div>
     <div class="business-name">Spm Creation</div>
-    <div class="biz-meta" id="bizMeta">📍 Vastral, Ahmedabad • Women's Wear</div>
+   <div class="biz-meta" id="bizMeta">📍 Vastral, Ahmedabad • Women's Wear</div>
+    <div id="creditBadge" class="credit-badge">✨ 5 credits left</div>
   </div>
 
   <!-- STEP 0: QR GATE -->
@@ -473,7 +473,7 @@
   function updateCreditBadge() {
     const badge = document.getElementById('creditBadge');
     if (remainingCredits === null) { badge.style.display = 'none'; return; }
-    badge.style.display = 'block';
+    badge.style.display = 'inline-block';
     badge.textContent = `✨ ${remainingCredits} credit${remainingCredits === 1 ? '' : 's'} left`;
     badge.classList.remove('low', 'empty');
     if (remainingCredits <= 0) badge.classList.add('empty');
